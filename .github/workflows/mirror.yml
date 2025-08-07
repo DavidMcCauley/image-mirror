@@ -1,0 +1,61 @@
+name: Mirror Public Docker Images
+
+on:
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+  # Runs on a schedule (every Sunday at midnight UTC)
+  schedule:
+    - cron: '0 0 * * 0'
+
+jobs:
+  mirror:
+    name: Mirror Docker Hub Image to GHCR
+    runs-on: ubuntu-latest
+    permissions:
+      # Required to write packages to the repo's container registry
+      packages: write
+
+    # A matrix allows us to easily define a list of images to mirror
+    strategy:
+      matrix:
+        image:
+          - 'grafana/grafana:9.5.3'
+          - 'grafana/loki:2.8.2'
+          - 'grafana/promtail:2.8.2'
+          - 'traefik:v2.10'
+          - 'prom/prometheus:v2.45.0'
+          - 'gcr.io/cadvisor/cadvisor:v0.47.1'
+          - 'python:3.10-slim'
+          - 'quay.io/keycloak/keycloak:22.0.5'
+          # Add any other public images you want to mirror here
+          # - 'redis:7.0'
+          # - 'postgres:15'
+
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull, Retag, and Push Image
+        run: |
+          # The original image name from Docker Hub (e.g., grafana/loki:2.8.2)
+          SOURCE_IMAGE="${{ matrix.image }}"
+          
+          # The new image name for GHCR. We replace '/' with '-' for a clean name.
+          # Example: ghcr.io/your-username/grafana-loki:2.8.2
+          TARGET_IMAGE="ghcr.io/${{ github.repository_owner }}/$(echo $SOURCE_IMAGE | sed 's/\//-/g')"
+          
+          echo "Processing image: $SOURCE_IMAGE"
+          echo "Target GHCR image: $TARGET_IMAGE"
+          
+          echo "Pulling from Docker Hub..."
+          docker pull $SOURCE_IMAGE
+          
+          echo "Retagging for GHCR..."
+          docker tag $SOURCE_IMAGE $TARGET_IMAGE
+          
+          echo "Pushing to GHCR..."
+          docker push $TARGET_IMAGE
