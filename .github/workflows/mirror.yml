@@ -14,6 +14,7 @@ jobs:
     permissions:
       # Required to write packages to the repo's container registry
       packages: write
+      contents: read # Required to install jq
 
     # A matrix allows us to easily define a list of images to mirror
     strategy:
@@ -32,6 +33,9 @@ jobs:
           # - 'postgres:15'
 
     steps:
+      - name: Install jq
+        uses: dcarbone/install-jq-action@v2.1.0
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -39,21 +43,37 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Pull, Retag, and Push Image
+      - name: Check Digests and Mirror if Necessary
         run: |
           # The original image name from Docker Hub (e.g., grafana/loki:2.8.2)
           SOURCE_IMAGE="${{ matrix.image }}"
           
-          # Convert the repository owner's name to lowercase to meet Docker's naming requirements.
+          # Convert the repository owner's name to lowercase
           OWNER_LOWERCASE=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           
           # The new image name for GHCR. We replace '/' with '-' for a clean name.
-          # Example: ghcr.io/your-username/grafana-loki:2.8.2
           TARGET_IMAGE="ghcr.io/$OWNER_LOWERCASE/$(echo $SOURCE_IMAGE | sed 's/\//-/g')"
           
-          echo "Processing image: $SOURCE_IMAGE"
-          echo "Target GHCR image: $TARGET_IMAGE"
+          echo "Source: $SOURCE_IMAGE"
+          echo "Target: $TARGET_IMAGE"
           
+          # Get the digest of the source image from Docker Hub
+          SOURCE_DIGEST=$(docker manifest inspect $SOURCE_IMAGE | jq -r '.digest')
+          echo "Source Digest: $SOURCE_DIGEST"
+          
+          # Get the digest of the target image from GHCR.
+          # If it doesn't exist, the command will fail, and we'll default the digest to "not_found".
+          TARGET_DIGEST=$(docker manifest inspect $TARGET_IMAGE | jq -r '.digest' || echo "not_found")
+          echo "Target Digest: $TARGET_DIGEST"
+          
+          # Compare the digests. If they are the same, skip.
+          if [ "$SOURCE_DIGEST" == "$TARGET_DIGEST" ]; then
+            echo "✅ Digests match. Skipping mirror for $TARGET_IMAGE."
+            exit 0
+          fi
+          
+          # If digests do not match or target doesn't exist, proceed with mirroring.
+          echo "Digests do not match or target image not found. Proceeding with mirror."
           echo "Pulling from Docker Hub..."
           docker pull $SOURCE_IMAGE
           
