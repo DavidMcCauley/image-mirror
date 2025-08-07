@@ -1,4 +1,4 @@
-name: Mirror Public Docker Images
+name: Mirror and Cleanup Public Docker Images
 
 on:
   # Allows you to run this workflow manually from the Actions tab
@@ -6,31 +6,40 @@ on:
   # Runs on a schedule (every Sunday at midnight UTC)
   schedule:
     - cron: '0 0 * * 0'
+  # Run when a pull request changes the image list, to validate it
+  pull_request:
+    paths:
+      - 'images.txt'
 
 jobs:
+  generate-matrix:
+    name: Generate Job Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.set-matrix.outputs.images }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Generate image matrix from images.txt
+        id: set-matrix
+        run: |
+          # Read the images.txt file, filter out empty lines/comments, and format as a JSON array
+          IMAGES_JSON=$(grep -vE '^\s*#|^\s*$' images.txt | jq -R . | jq -s -c .)
+          echo "images=${IMAGES_JSON}" >> $GITHUB_OUTPUT
+
   mirror:
     name: Mirror Docker Hub Image to GHCR
+    needs: generate-matrix
     runs-on: ubuntu-latest
+    if: needs.generate-matrix.outputs.images != '[]'
     permissions:
-      # Required to write packages to the repo's container registry
       packages: write
-      contents: read # Required to install jq
+      contents: read
 
-    # A matrix allows us to easily define a list of images to mirror
     strategy:
       matrix:
-        image:
-          - 'grafana/grafana:9.5.3'
-          - 'grafana/loki:2.8.2'
-          - 'grafana/promtail:2.8.2'
-          - 'traefik:v2.10'
-          - 'prom/prometheus:v2.45.0'
-          - 'gcr.io/cadvisor/cadvisor:v0.47.1'
-          - 'python:3.10-slim'
-          - 'quay.io/keycloak/keycloak:22.0.5'
-          # Add any other public images you want to mirror here
-          # - 'redis:7.0'
-          # - 'postgres:15'
+        image: ${{ fromJson(needs.generate-matrix.outputs.images) }}
 
     steps:
       - name: Install jq
@@ -45,40 +54,60 @@ jobs:
 
       - name: Check Digests and Mirror if Necessary
         run: |
-          # The original image name from Docker Hub (e.g., grafana/loki:2.8.2)
           SOURCE_IMAGE="${{ matrix.image }}"
-          
-          # Convert the repository owner's name to lowercase
           OWNER_LOWERCASE=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          
-          # The new image name for GHCR. We replace '/' with '-' for a clean name.
           TARGET_IMAGE="ghcr.io/$OWNER_LOWERCASE/$(echo $SOURCE_IMAGE | sed 's/\//-/g')"
-          
+
           echo "Source: $SOURCE_IMAGE"
           echo "Target: $TARGET_IMAGE"
-          
-          # Get the digest of the source image from Docker Hub
+
           SOURCE_DIGEST=$(docker manifest inspect $SOURCE_IMAGE | jq -r '.digest')
           echo "Source Digest: $SOURCE_DIGEST"
-          
-          # Get the digest of the target image from GHCR.
-          # If it doesn't exist, the command will fail, and we'll default the digest to "not_found".
+
           TARGET_DIGEST=$(docker manifest inspect $TARGET_IMAGE | jq -r '.digest' || echo "not_found")
           echo "Target Digest: $TARGET_DIGEST"
-          
-          # Compare the digests. If they are the same, skip.
+
           if [ "$SOURCE_DIGEST" == "$TARGET_DIGEST" ]; then
-            echo "✅ Digests match. Skipping mirror for $TARGET_IMAGE."
+            echo "Digests match. Skipping mirror for $TARGET_IMAGE."
             exit 0
           fi
-          
-          # If digests do not match or target doesn't exist, proceed with mirroring.
+
           echo "Digests do not match or target image not found. Proceeding with mirror."
           echo "Pulling from Docker Hub..."
           docker pull $SOURCE_IMAGE
-          
+
           echo "Retagging for GHCR..."
           docker tag $SOURCE_IMAGE $TARGET_IMAGE
-          
+
           echo "Pushing to GHCR..."
           docker push $TARGET_IMAGE
+
+  cleanup:
+    name: Cleanup Old Mirrored Images
+    needs: [generate-matrix, mirror]
+    runs-on: ubuntu-latest
+    # Only run the cleanup on scheduled runs or manual dispatches, not on PRs
+    if: success() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    permissions:
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJson(needs.generate-matrix.outputs.images) }}
+
+    steps:
+      - name: Generate package name for ${{ matrix.image }}
+        id: package_info
+        run: |
+          IMAGE_NO_TAG=$(echo "${{ matrix.image }}" | cut -d: -f1)
+          PACKAGE_NAME=$(echo "$IMAGE_NO_TAG" | sed 's/\//-/g')
+          echo "package_name=$PACKAGE_NAME" >> $GITHUB_OUTPUT
+
+      - name: Cleanup old versions for package ${{ steps.package_info.outputs.package_name }}
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: ${{ steps.package_info.outputs.package_name }}
+          package-type: 'container'
+          owner: ${{ github.repository_owner }}
+          min-versions-to-keep: 1
