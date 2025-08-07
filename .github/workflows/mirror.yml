@@ -44,9 +44,12 @@ jobs:
           # The original image name from Docker Hub (e.g., grafana/loki:2.8.2)
           SOURCE_IMAGE="${{ matrix.image }}"
           
+          # Convert the repository owner's name to lowercase to meet Docker's naming requirements.
+          OWNER_LOWERCASE=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          
           # The new image name for GHCR. We replace '/' with '-' for a clean name.
           # Example: ghcr.io/your-username/grafana-loki:2.8.2
-          TARGET_IMAGE="ghcr.io/${{ github.repository_owner }}/$(echo $SOURCE_IMAGE | sed 's/\//-/g')"
+          TARGET_IMAGE="ghcr.io/$OWNER_LOWERCASE/$(echo $SOURCE_IMAGE | sed 's/\//-/g')"
           
           echo "Processing image: $SOURCE_IMAGE"
           echo "Target GHCR image: $TARGET_IMAGE"
