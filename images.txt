@@ -8,4 +8,6 @@ traefik:v2.10
 prom/prometheus:v2.45.0
 gcr.io/cadvisor/cadvisor:v0.47.1
 python:3.10-slim
+python:3.11-slim
+python:3.12-slim
 quay.io/keycloak/keycloak:22.0.5
